@@ -37,7 +37,7 @@ def parse_excel_content_to_dataframes(file_content):
     return dataframes
 
 # Load your file content
-with open('data.xlsx', 'rb') as file:
+with open('data/atc_data_1_monthly.xlsx', 'rb') as file:
     file_content = file.read()
 
 # Parse the content into DataFrames
