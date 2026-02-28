@@ -119,6 +119,27 @@ def _save_trend_plot(
 	plt.close()
 
 
+def _save_pvalue_bar_chart(*, out_path: Path, pvals: pd.Series, title: str) -> None:
+	# pvals: index=parameter name, values=p-value
+	ser = pd.to_numeric(pvals, errors="coerce").dropna()
+	if ser.empty:
+		return
+
+	# sort by p-value (smallest first)
+	ser = ser.sort_values(ascending=True)
+	out_path.parent.mkdir(parents=True, exist_ok=True)
+	plt.figure(figsize=(10, 4))
+	plt.bar(range(len(ser)), ser.to_numpy(), color="tab:green")
+	plt.axhline(0.05, color="tab:red", linewidth=1.5, linestyle="--", label="0.05")
+	plt.xticks(range(len(ser)), ser.index.tolist(), rotation=45, ha="right")
+	plt.ylim(0, 1)
+	plt.title(title)
+	plt.ylabel("p-value")
+	plt.tight_layout()
+	plt.savefig(out_path, dpi=150)
+	plt.close()
+
+
 def _run_mann_kendall(places: dict[str, pd.DataFrame], *, outdir: Path) -> None:
 	for place, df in places.items():
 		params = _iter_numeric_parameters(df)
@@ -173,6 +194,19 @@ def _run_mann_kendall(places: dict[str, pd.DataFrame], *, outdir: Path) -> None:
 			continue
 		out = pd.DataFrame(rows).sort_values(["Parameter"]).reset_index(drop=True)
 		print(out.to_string(index=False))
+
+		# Save p-value chart for this place
+		try:
+			pval_series = out.set_index("Parameter")["p"]
+			pval_path = outdir / "mann_kendall" / _safe_filename(place) / "p_values.png"
+			_save_pvalue_bar_chart(
+				out_path=pval_path,
+				pvals=pval_series,
+				title=f"{place} - Mann-Kendall p-values",
+			)
+		except Exception:
+			# Chart saving should never break analysis output
+			pass
 
 
 def _run_sens_slope(places: dict[str, pd.DataFrame], *, outdir: Path) -> None:
