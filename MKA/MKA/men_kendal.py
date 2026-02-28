@@ -104,6 +104,7 @@ def _save_trend_plot(
 	trend_values: pd.Series,
 	title: str,
 	ylabel: str,
+	note: str | None = None,
 ) -> None:
 	out_path.parent.mkdir(parents=True, exist_ok=True)
 	plt.figure(figsize=(10, 5))
@@ -114,6 +115,18 @@ def _save_trend_plot(
 	plt.ylabel(ylabel)
 	plt.grid(True, alpha=0.3)
 	plt.legend()
+	if note:
+		ax = plt.gca()
+		ax.text(
+			0.02,
+			0.98,
+			note,
+			transform=ax.transAxes,
+			va="top",
+			ha="left",
+			fontsize=9,
+			bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.75, "edgecolor": "gray"},
+		)
 	plt.tight_layout()
 	plt.savefig(out_path, dpi=150)
 	plt.close()
@@ -145,6 +158,10 @@ def _run_mann_kendall(places: dict[str, pd.DataFrame], *, outdir: Path) -> None:
 				slope, intercept, _, _ = theilslopes(values_sorted, years_sorted)
 
 			trend = slope * years_sorted + intercept
+			pval = float(getattr(mk_res, "p", float("nan")))
+			trend_label = getattr(mk_res, "trend", None)
+			tau_mk = float(getattr(mk_res, "Tau", float("nan")))
+			note = f"trend: {trend_label}\np: {pval:.3g}\nTau: {tau_mk:.3f}\nslope: {slope:.4g} / year"
 			plot_path = outdir / "mann_kendall" / _safe_filename(place) / f"{_safe_filename(col)}.png"
 			_save_trend_plot(
 				out_path=plot_path,
@@ -153,6 +170,7 @@ def _run_mann_kendall(places: dict[str, pd.DataFrame], *, outdir: Path) -> None:
 				trend_values=pd.Series(trend),
 				title=f"{place} - {col} (Mann-Kendall)",
 				ylabel=col,
+				note=note,
 			)
 
 			rows.append(
