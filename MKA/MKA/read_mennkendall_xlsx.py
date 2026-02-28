@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 
@@ -97,6 +97,106 @@ def load_places_from_excel(
 
         df = df.reset_index(drop=True)
         results[place] = df
+
+    return results
+
+
+def load_climate_sheets_from_excel(
+    xlsx_path: str | Path,
+    *,
+    parameter_col: str = "PARAMETER",
+    year_col: str = "YEAR",
+    periods: Optional[Sequence[str]] = None,
+) -> Dict[str, pd.DataFrame]:
+    """Load the new workbook format where each sheet is a district/area.
+
+    Expected sheet layout (starting at A1 with headers):
+    PARAMETER | YEAR | JAN | FEB | ... | DEC | ANN
+
+    Produces one DataFrame per sheet in a *wide* format:
+    - Column 'Year'
+    - One column per (PARAMETER, PERIOD), flattened as '<Parameter>__<PERIOD>'
+      e.g. 'Soil Wetness__JAN', 'Precipitation__ANN'
+    """
+
+    xlsx_path = Path(xlsx_path)
+    if not xlsx_path.exists():
+        raise FileNotFoundError(f"Excel file not found: {xlsx_path}")
+
+    expected_periods = list(periods) if periods is not None else [
+        "JAN",
+        "FEB",
+        "MAR",
+        "APR",
+        "MAY",
+        "JUN",
+        "JUL",
+        "AUG",
+        "SEP",
+        "OCT",
+        "NOV",
+        "DEC",
+        "ANN",
+    ]
+
+    sheets = pd.read_excel(xlsx_path, sheet_name=None, engine="openpyxl")
+    results: Dict[str, pd.DataFrame] = {}
+
+    for sheet_name, df in sheets.items():
+        if df is None or df.empty:
+            continue
+
+        # Normalize column names for robustness (strip + uppercase)
+        rename_map: dict[str, str] = {}
+        for c in df.columns:
+            if isinstance(c, str):
+                rename_map[c] = c.strip().upper()
+            else:
+                rename_map[c] = str(c).strip().upper()
+        df_norm = df.rename(columns=rename_map).copy()
+
+        pcol = parameter_col.strip().upper()
+        ycol = year_col.strip().upper()
+        if pcol not in df_norm.columns or ycol not in df_norm.columns:
+            raise ValueError(
+                f"Sheet '{sheet_name}' does not match expected format. "
+                f"Missing '{parameter_col}' or '{year_col}' columns."
+            )
+
+        # Determine available period/value columns
+        available_periods = [c for c in expected_periods if c in df_norm.columns]
+        if not available_periods:
+            # fall back: everything except PARAMETER/YEAR
+            available_periods = [c for c in df_norm.columns if c not in {pcol, ycol}]
+
+        # Coerce
+        df_norm[pcol] = df_norm[pcol].astype(str).str.strip()
+        df_norm[ycol] = pd.to_numeric(df_norm[ycol], errors="coerce")
+        for c in available_periods:
+            df_norm[c] = pd.to_numeric(df_norm[c], errors="coerce")
+
+        tidy = df_norm.melt(
+            id_vars=[pcol, ycol],
+            value_vars=available_periods,
+            var_name="PERIOD",
+            value_name="VALUE",
+        ).dropna(subset=[ycol, "VALUE", pcol])
+
+        wide = (
+            tidy.pivot_table(
+                index=ycol,
+                columns=[pcol, "PERIOD"],
+                values="VALUE",
+                aggfunc="first",
+            )
+            .sort_index()
+        )
+
+        # Flatten columns: <parameter>__<period>
+        wide.columns = [f"{param}__{period}" for (param, period) in wide.columns]
+        wide = wide.reset_index().rename(columns={ycol: "Year"})
+        wide["Year"] = pd.to_numeric(wide["Year"], errors="coerce").astype("Int64")
+        results[sheet_name.strip()] = wide
 
     return results
 

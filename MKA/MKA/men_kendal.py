@@ -13,7 +13,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from read_mennkendall_xlsx import load_places_from_excel
+from read_mennkendall_xlsx import load_places_from_excel, load_climate_sheets_from_excel
 
 
 def _sanitize_identifier(name: str) -> str:
@@ -33,7 +33,8 @@ def _safe_filename(s: str) -> str:
 	return safe or "item"
 
 
-def _load_merged_places(xlsx_path: Path) -> dict[str, pd.DataFrame]:
+def _load_legacy_mennkendall_places(xlsx_path: Path) -> dict[str, pd.DataFrame]:
+	# Legacy format: special block layout across columns with 2 sheets
 	sheet1_defaults = ["Year", "Temperature", "Precipitation", "Vapor Pressure"]
 	sheet2_defaults = [
 		"Year",
@@ -73,6 +74,31 @@ def _load_merged_places(xlsx_path: Path) -> dict[str, pd.DataFrame]:
 		places[place_name] = merged.reset_index(drop=True)
 
 	return places
+
+
+def _detect_input_format(xlsx_path: Path) -> str:
+	# Detect based on first sheet columns
+	try:
+		head = pd.read_excel(xlsx_path, sheet_name=0, nrows=1, engine="openpyxl")
+		cols = {str(c).strip().upper() for c in head.columns}
+		if "PARAMETER" in cols and "YEAR" in cols:
+			return "climate"
+	except Exception:
+		pass
+	return "legacy"
+
+
+def _load_places(xlsx_path: Path, *, input_format: str) -> dict[str, pd.DataFrame]:
+	if input_format == "auto":
+		input_format = _detect_input_format(xlsx_path)
+
+	if input_format == "climate":
+		# New format: one sheet per area
+		return load_climate_sheets_from_excel(xlsx_path)
+	if input_format == "legacy":
+		return _load_legacy_mennkendall_places(xlsx_path)
+
+	raise ValueError("input_format must be one of: auto, climate, legacy")
 
 
 def _iter_numeric_parameters(df: pd.DataFrame) -> list[str]:
@@ -257,6 +283,17 @@ def _prompt_analysis_choice() -> str:
 def _parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Mann-Kendall / Sen's slope analysis for mennkendall.xlsx")
 	parser.add_argument(
+		"--file",
+		default=None,
+		help="Path to input Excel file. Defaults to ./climate_data.xlsx if present, otherwise ./mennkendall.xlsx.",
+	)
+	parser.add_argument(
+		"--format",
+		choices=["auto", "climate", "legacy"],
+		default="auto",
+		help="Input format. 'climate' = one sheet per area with PARAMETER/YEAR/JAN..ANN; 'legacy' = old block layout.",
+	)
+	parser.add_argument(
 		"--analysis",
 		choices=["mk", "sens"],
 		default=None,
@@ -273,10 +310,12 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
 	args = _parse_args()
 	here = Path(__file__).resolve().parent
-	xlsx_path = here / "mennkendall.xlsx"
+	default_climate = here / "climate_data.xlsx"
+	default_legacy = here / "mennkendall.xlsx"
+	xlsx_path = Path(args.file) if args.file else (default_climate if default_climate.exists() else default_legacy)
 	outdir = Path(args.outdir) if args.outdir else (here / "outputs")
 
-	places = _load_merged_places(xlsx_path)
+	places = _load_places(xlsx_path, input_format=args.format)
 
 	# Create one DataFrame variable per place name.
 	for place_name, df in places.items():
