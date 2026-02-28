@@ -16,6 +16,58 @@ import matplotlib.pyplot as plt
 from read_mennkendall_xlsx import load_places_from_excel, load_climate_sheets_from_excel
 
 
+MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+
+
+def _prompt_district(places: dict[str, pd.DataFrame]) -> str:
+	names = sorted(places.keys())
+	if not names:
+		raise ValueError("No districts/areas found in the Excel file.")
+
+	print("\nSelect district (sheet name):")
+	for i, name in enumerate(names, start=1):
+		print(f"  {i}) {name}")
+	choice = input(f"Enter 1-{len(names)} (or type name): ").strip()
+	if not choice:
+		return names[0]
+	if choice.isdigit():
+		idx = int(choice)
+		if 1 <= idx <= len(names):
+			return names[idx - 1]
+
+	# match by name (case-insensitive)
+	for name in names:
+		if name.lower() == choice.lower():
+			return name
+
+	print("Invalid district; defaulting to first sheet.")
+	return names[0]
+
+
+def _prompt_parameter(df: pd.DataFrame) -> str:
+	params = _list_climate_parameters(df)
+	if not params:
+		raise ValueError("No parameters found in this district sheet.")
+
+	print("\nSelect parameter:")
+	for i, p in enumerate(params, start=1):
+		print(f"  {i}) {p}")
+	choice = input(f"Enter 1-{len(params)} (or type name): ").strip()
+	if not choice:
+		return params[0]
+	if choice.isdigit():
+		idx = int(choice)
+		if 1 <= idx <= len(params):
+			return params[idx - 1]
+
+	for p in params:
+		if p.lower() == choice.lower():
+			return p
+
+	print("Invalid parameter; defaulting to first.")
+	return params[0]
+
+
 def _sanitize_identifier(name: str) -> str:
 	safe = re.sub(r"[^0-9a-zA-Z_]+", "_", name.strip())
 	safe = re.sub(r"_+", "_", safe).strip("_")
@@ -113,6 +165,94 @@ def _iter_numeric_parameters(df: pd.DataFrame) -> list[str]:
 	return cols
 
 
+def _is_climate_wide_format(df: pd.DataFrame) -> bool:
+	# New format flattens columns as '<PARAMETER>__<PERIOD>'
+	return any("__" in str(c) for c in df.columns)
+
+
+def _list_climate_parameters(df: pd.DataFrame) -> list[str]:
+	params: set[str] = set()
+	for c in df.columns:
+		s = str(c)
+		if "__" in s:
+			params.add(s.split("__", 1)[0])
+	return sorted(params)
+
+
+def _monthly_mk_stats(df: pd.DataFrame, base_param: str) -> pd.DataFrame:
+	rows: list[dict[str, object]] = []
+	for m in MONTHS:
+		col = f"{base_param}__{m}"
+		if col not in df.columns:
+			continue
+		years, values = _aligned_year_value(df, col)
+		if len(values) < 3:
+			continue
+
+		order = years.argsort()
+		values_sorted = values.iloc[order].to_numpy()
+		years_sorted = years.iloc[order].to_numpy()
+
+		res = mk.original_test(values_sorted)
+		rows.append(
+			{
+				"Month": m,
+				"N": int(len(values_sorted)),
+				# Q is commonly reported as the MK score/statistic; pymannkendall exposes it as 's'
+				"Q": int(getattr(res, "s", 0)),
+				"Z": float(getattr(res, "z", float("nan"))),
+				"p": float(getattr(res, "p", float("nan"))),
+				"Trend": getattr(res, "trend", None),
+				"Tau": float(getattr(res, "Tau", float("nan"))),
+			}
+		)
+
+	out = pd.DataFrame(rows)
+	if out.empty:
+		return out
+	# keep month order
+	month_order = {m: i for i, m in enumerate(MONTHS)}
+	out["_m"] = out["Month"].map(month_order)
+	out = out.sort_values(["_m"]).drop(columns=["_m"]).reset_index(drop=True)
+	return out
+
+
+def _monthly_mk_q_only(df: pd.DataFrame, base_param: str) -> pd.DataFrame:
+	rows: list[dict[str, object]] = []
+	for m in MONTHS:
+		col = f"{base_param}__{m}"
+		if col not in df.columns:
+			continue
+		years, values = _aligned_year_value(df, col)
+		if len(values) < 3:
+			continue
+		order = years.argsort()
+		values_sorted = values.iloc[order].to_numpy()
+		res = mk.original_test(values_sorted)
+		rows.append({"Month": m, "Q": int(getattr(res, "s", 0))})
+
+	out = pd.DataFrame(rows)
+	if out.empty:
+		return out
+	month_order = {m: i for i, m in enumerate(MONTHS)}
+	out["_m"] = out["Month"].map(month_order)
+	out = out.sort_values(["_m"]).drop(columns=["_m"]).reset_index(drop=True)
+	return out
+
+
+def _monthly_means(df: pd.DataFrame, base_param: str) -> pd.Series:
+	# Mean across all years for each month (JAN..DEC)
+	data: dict[str, float] = {}
+	for m in MONTHS:
+		col = f"{base_param}__{m}"
+		if col not in df.columns:
+			data[m] = float("nan")
+			continue
+		vals = pd.to_numeric(df[col], errors="coerce")
+		data[m] = float(vals.mean(skipna=True)) if vals.notna().any() else float("nan")
+	return pd.Series(data)
+
+
 def _aligned_year_value(df: pd.DataFrame, col: str) -> tuple[pd.Series, pd.Series]:
 	if "Year" not in df.columns:
 		raise KeyError("Year column missing")
@@ -158,7 +298,33 @@ def _save_trend_plot(
 	plt.close()
 
 
-def _run_mann_kendall(places: dict[str, pd.DataFrame], *, outdir: Path) -> None:
+def _save_monthly_average_bar_chart(
+	*,
+	out_path: Path,
+	means: pd.Series,
+	title: str,
+	ylabel: str,
+) -> None:
+	out_path.parent.mkdir(parents=True, exist_ok=True)
+	vals = [float(means.get(m, float("nan"))) for m in MONTHS]
+	plt.figure(figsize=(10, 4))
+	plt.bar(MONTHS, vals, color="tab:blue")
+	plt.title(title)
+	plt.xlabel("Month")
+	plt.ylabel(ylabel)
+	plt.grid(True, axis="y", alpha=0.3)
+	plt.tight_layout()
+	plt.savefig(out_path, dpi=150)
+	plt.close()
+
+
+def _run_mann_kendall(
+	places: dict[str, pd.DataFrame],
+	*,
+	outdir: Path,
+	quiet: bool = False,
+	include_monthly_tables: bool = True,
+) -> None:
 	for place, df in places.items():
 		params = _iter_numeric_parameters(df)
 		rows: list[dict[str, object]] = []
@@ -211,12 +377,44 @@ def _run_mann_kendall(places: dict[str, pd.DataFrame], *, outdir: Path) -> None:
 				}
 			)
 
-		print(f"\n=== {place} (Mann-Kendall) ===")
-		if not rows:
-			print("No usable numeric columns found.")
-			continue
-		out = pd.DataFrame(rows).sort_values(["Parameter"]).reset_index(drop=True)
-		print(out.to_string(index=False))
+		if not quiet:
+			print(f"\n=== {place} (Mann-Kendall) ===")
+			if not rows:
+				print("No usable numeric columns found.")
+				continue
+			out = pd.DataFrame(rows).sort_values(["Parameter"]).reset_index(drop=True)
+			print(out.to_string(index=False))
+
+		# Monthly MK (Jan..Dec across years) for climate sheet-per-area format
+		if (not quiet) and include_monthly_tables and _is_climate_wide_format(df):
+			for base_param in _list_climate_parameters(df):
+				monthly = _monthly_mk_stats(df, base_param)
+				print(f"\n--- {place} : Monthly Mann-Kendall (Q and Z) for '{base_param}' ---")
+				if monthly.empty:
+					print("No monthly data found.")
+				else:
+					print(monthly.to_string(index=False))
+
+
+def _print_selected_district_q_stats(district: str, df: pd.DataFrame) -> None:
+	print(f"\n=== {district} : Monthly Q-statistics (Mann-Kendall) ===")
+	if not _is_climate_wide_format(df):
+		print("This input format has no monthly columns (JAN..DEC).")
+		print("Q-statistics are not computed monthly for legacy format.")
+		return
+
+	params = _list_climate_parameters(df)
+	if not params:
+		print("No parameters found.")
+		return
+
+	for base_param in params:
+		qtab = _monthly_mk_q_only(df, base_param)
+		print(f"\nParameter: {base_param}")
+		if qtab.empty:
+			print("No monthly data found.")
+		else:
+			print(qtab.to_string(index=False))
 
 
 def _run_sens_slope(places: dict[str, pd.DataFrame], *, outdir: Path) -> None:
@@ -294,6 +492,16 @@ def _parse_args() -> argparse.Namespace:
 		help="Input format. 'climate' = one sheet per area with PARAMETER/YEAR/JAN..ANN; 'legacy' = old block layout.",
 	)
 	parser.add_argument(
+		"--district",
+		default=None,
+		help="District/sheet name to analyze for Mann-Kendall Q-stats. If omitted, you'll be prompted.",
+	)
+	parser.add_argument(
+		"--parameter",
+		default=None,
+		help="Parameter to analyze in Mann-Kendall mode (climate format). If omitted, you'll be prompted.",
+	)
+	parser.add_argument(
 		"--analysis",
 		choices=["mk", "sens"],
 		default=None,
@@ -327,7 +535,36 @@ def main() -> None:
 	print(f"Charts will be saved under: {outdir.resolve()}")
 
 	if choice == "mk":
-		_run_mann_kendall(places, outdir=outdir)
+		district = args.district or _prompt_district(places)
+		if district not in places:
+			print("District not found; defaulting to first sheet.")
+			district = sorted(places.keys())[0]
+		df = places[district]
+
+		# Climate-format: one parameter -> one 12-bar monthly-average chart
+		if _is_climate_wide_format(df):
+			param = args.parameter or _prompt_parameter(df)
+			print(f"\n=== {district} : Monthly Q-statistics (Mann-Kendall) ===")
+			print(f"\nParameter: {param}")
+			qtab = _monthly_mk_q_only(df, param)
+			if qtab.empty:
+				print("No monthly data found.")
+			else:
+				print(qtab.to_string(index=False))
+
+			means = _monthly_means(df, param)
+			chart_path = outdir / "mann_kendall" / _safe_filename(district) / f"{_safe_filename(param)}_Q_stats.png"
+			_save_monthly_average_bar_chart(
+				out_path=chart_path,
+				means=means,
+				title=f"{district} - {param} (Q-stats by month)",
+				ylabel=param,
+			)
+			print(f"\nSaved chart: {chart_path}")
+		else:
+			# Legacy format fallback
+			_print_selected_district_q_stats(district, df)
+			_run_mann_kendall({district: df}, outdir=outdir, quiet=True, include_monthly_tables=False)
 	else:
 		_run_sens_slope(places, outdir=outdir)
 
