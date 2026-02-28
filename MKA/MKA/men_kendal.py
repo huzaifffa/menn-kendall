@@ -229,7 +229,13 @@ def _monthly_mk_q_only(df: pd.DataFrame, base_param: str) -> pd.DataFrame:
 		order = years.argsort()
 		values_sorted = values.iloc[order].to_numpy()
 		res = mk.original_test(values_sorted)
-		rows.append({"Month": m, "Q": int(getattr(res, "s", 0))})
+		rows.append(
+			{
+				"Month": m,
+				"Q": int(getattr(res, "s", 0)),
+				"Z": float(getattr(res, "z", float("nan"))),
+			}
+		)
 
 	out = pd.DataFrame(rows)
 	if out.empty:
@@ -353,7 +359,14 @@ def _run_mann_kendall(
 			pval = float(getattr(mk_res, "p", float("nan")))
 			trend_label = getattr(mk_res, "trend", None)
 			tau_mk = float(getattr(mk_res, "Tau", float("nan")))
-			note = f"trend: {trend_label}\np: {pval:.3g}\nTau: {tau_mk:.3f}\nslope: {slope:.4g} / year"
+			z_mk = float(getattr(mk_res, "z", float("nan")))
+			note = (
+				f"trend: {trend_label}\n"
+				f"p: {pval:.3g}\n"
+				f"Z: {z_mk:.3f}\n"
+				f"Tau: {tau_mk:.3f}\n"
+				f"slope: {slope:.4g} / year"
+			)
 			plot_path = outdir / "mann_kendall" / _safe_filename(place) / f"{_safe_filename(col)}.png"
 			_save_trend_plot(
 				out_path=plot_path,
@@ -370,6 +383,7 @@ def _run_mann_kendall(
 					"Parameter": col,
 					"N": int(len(values_sorted)),
 					"Trend": getattr(mk_res, "trend", None),
+					"Z": float(getattr(mk_res, "z", float("nan"))),
 					"p": float(getattr(mk_res, "p", float("nan"))),
 					"Tau": float(getattr(mk_res, "Tau", float("nan"))),
 					"KendallTau(year,value)": float(tau) if tau is not None else float("nan"),
@@ -397,7 +411,7 @@ def _run_mann_kendall(
 
 
 def _print_selected_district_q_stats(district: str, df: pd.DataFrame) -> None:
-	print(f"\n=== {district} : Monthly Q-statistics (Mann-Kendall) ===")
+	print(f"\n=== {district} : Monthly Q and Z statistics (Mann-Kendall) ===")
 	if not _is_climate_wide_format(df):
 		print("This input format has no monthly columns (JAN..DEC).")
 		print("Q-statistics are not computed monthly for legacy format.")
@@ -544,7 +558,7 @@ def main() -> None:
 		# Climate-format: one parameter -> one 12-bar monthly-average chart
 		if _is_climate_wide_format(df):
 			param = args.parameter or _prompt_parameter(df)
-			print(f"\n=== {district} : Monthly Q-statistics (Mann-Kendall) ===")
+			print(f"\n=== {district} : Monthly Q and Z statistics (Mann-Kendall) ===")
 			print(f"\nParameter: {param}")
 			qtab = _monthly_mk_q_only(df, param)
 			if qtab.empty:
