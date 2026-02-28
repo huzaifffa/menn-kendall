@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 
+# reading the file
 
 def _sanitize_identifier(name: str) -> str:
     safe = re.sub(r"[^0-9a-zA-Z_]+", "_", name.strip())

@@ -324,6 +324,26 @@ def _save_monthly_average_bar_chart(
 	plt.close()
 
 
+def _save_monthly_stat_bar_chart(
+	*,
+	out_path: Path,
+	stat_by_month: dict[str, float],
+	title: str,
+	ylabel: str,
+) -> None:
+	out_path.parent.mkdir(parents=True, exist_ok=True)
+	vals = [float(stat_by_month.get(m, float("nan"))) for m in MONTHS]
+	plt.figure(figsize=(10, 4))
+	plt.bar(MONTHS, vals, color="tab:blue")
+	plt.title(title)
+	plt.xlabel("Month")
+	plt.ylabel(ylabel)
+	plt.grid(True, axis="y", alpha=0.3)
+	plt.tight_layout()
+	plt.savefig(out_path, dpi=150)
+	plt.close()
+
+
 def _run_mann_kendall(
 	places: dict[str, pd.DataFrame],
 	*,
@@ -565,6 +585,22 @@ def main() -> None:
 				print("No monthly data found.")
 			else:
 				print(qtab.to_string(index=False))
+				# Save Q+Z table alongside the chart
+				qz_path = outdir / "mann_kendall" / _safe_filename(district) / f"{_safe_filename(param)}_QZ_stats.csv"
+				qz_path.parent.mkdir(parents=True, exist_ok=True)
+				qtab.to_csv(qz_path, index=False)
+				print(f"\nSaved Q+Z table: {qz_path}")
+
+				# Save Z-stats bar chart alongside the existing chart
+				z_by_month = {str(r["Month"]): float(r["Z"]) for r in qtab[["Month", "Z"]].to_dict("records")}
+				z_chart_path = outdir / "mann_kendall" / _safe_filename(district) / f"{_safe_filename(param)}_Z_stats.png"
+				_save_monthly_stat_bar_chart(
+					out_path=z_chart_path,
+					stat_by_month=z_by_month,
+					title=f"{district} - {param} (Z-stats by month)",
+					ylabel="Z",
+				)
+				print(f"\nSaved Z chart: {z_chart_path}")
 
 			means = _monthly_means(df, param)
 			chart_path = outdir / "mann_kendall" / _safe_filename(district) / f"{_safe_filename(param)}_Q_stats.png"
