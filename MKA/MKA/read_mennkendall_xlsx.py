@@ -22,6 +22,7 @@ def load_places_from_excel(
     *,
     sheet_name: str | int = 0,
     data_columns_per_place: int = 4,
+    default_headers: Optional[List[str]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Load Sheet1-style grouped blocks into one DataFrame per place.
 
@@ -68,13 +69,20 @@ def load_places_from_excel(
         headers = raw.iloc[1, cols].tolist()
 
         # Fall back to expected headers if the row is partially blank.
-        default_headers = ["Year", "Temperature", "Precipitation", "Vapor Pressure"]
+        effective_defaults = default_headers or [
+            "Year",
+            "Temperature",
+            "Precipitation",
+            "Vapor Pressure",
+        ]
         cleaned_headers: List[str] = []
         for i, h in enumerate(headers):
             if isinstance(h, str) and h.strip():
                 cleaned_headers.append(h.strip())
             else:
-                cleaned_headers.append(default_headers[i] if i < len(default_headers) else f"col_{i}")
+                cleaned_headers.append(
+                    effective_defaults[i] if i < len(effective_defaults) else f"col_{i}"
+                )
 
         df = raw.iloc[2:, cols].copy()
         df.columns = cleaned_headers
