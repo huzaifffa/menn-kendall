@@ -8,6 +8,11 @@ import pandas as pd
 from scipy.stats import kendalltau, theilslopes
 import pymannkendall as mk
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from read_mennkendall_xlsx import load_places_from_excel
 
 
@@ -19,6 +24,13 @@ def _sanitize_identifier(name: str) -> str:
 	if safe[0].isdigit():
 		safe = f"place_{safe}"
 	return safe
+
+
+def _safe_filename(s: str) -> str:
+	# Windows-friendly filenames
+	safe = re.sub(r"[^0-9a-zA-Z._-]+", "_", str(s).strip())
+	safe = re.sub(r"_+", "_", safe).strip("_")
+	return safe or "item"
 
 
 def _load_merged_places(xlsx_path: Path) -> dict[str, pd.DataFrame]:
@@ -84,7 +96,30 @@ def _aligned_year_value(df: pd.DataFrame, col: str) -> tuple[pd.Series, pd.Serie
 	return years[mask].astype(float), values[mask].astype(float)
 
 
-def _run_mann_kendall(places: dict[str, pd.DataFrame]) -> None:
+def _save_trend_plot(
+	*,
+	out_path: Path,
+	years: pd.Series,
+	values: pd.Series,
+	trend_values: pd.Series,
+	title: str,
+	ylabel: str,
+) -> None:
+	out_path.parent.mkdir(parents=True, exist_ok=True)
+	plt.figure(figsize=(10, 5))
+	plt.plot(years.to_numpy(), values.to_numpy(), label="Observed", color="tab:blue")
+	plt.plot(years.to_numpy(), trend_values.to_numpy(), label="Trend", color="tab:red")
+	plt.title(title)
+	plt.xlabel("Year")
+	plt.ylabel(ylabel)
+	plt.grid(True, alpha=0.3)
+	plt.legend()
+	plt.tight_layout()
+	plt.savefig(out_path, dpi=150)
+	plt.close()
+
+
+def _run_mann_kendall(places: dict[str, pd.DataFrame], *, outdir: Path) -> None:
 	for place, df in places.items():
 		params = _iter_numeric_parameters(df)
 		rows: list[dict[str, object]] = []
@@ -101,6 +136,24 @@ def _run_mann_kendall(places: dict[str, pd.DataFrame]) -> None:
 			mk_res = mk.original_test(values_sorted)
 			# also compute Kendall tau against actual year values
 			tau, p_tau = kendalltau(years_sorted, values_sorted)
+
+			# Trend line for plotting (prefer MK slope/intercept if available)
+			if hasattr(mk_res, "slope") and hasattr(mk_res, "intercept"):
+				slope = float(getattr(mk_res, "slope"))
+				intercept = float(getattr(mk_res, "intercept"))
+			else:
+				slope, intercept, _, _ = theilslopes(values_sorted, years_sorted)
+
+			trend = slope * years_sorted + intercept
+			plot_path = outdir / "mann_kendall" / _safe_filename(place) / f"{_safe_filename(col)}.png"
+			_save_trend_plot(
+				out_path=plot_path,
+				years=pd.Series(years_sorted),
+				values=pd.Series(values_sorted),
+				trend_values=pd.Series(trend),
+				title=f"{place} - {col} (Mann-Kendall)",
+				ylabel=col,
+			)
 
 			rows.append(
 				{
@@ -122,7 +175,7 @@ def _run_mann_kendall(places: dict[str, pd.DataFrame]) -> None:
 		print(out.to_string(index=False))
 
 
-def _run_sens_slope(places: dict[str, pd.DataFrame]) -> None:
+def _run_sens_slope(places: dict[str, pd.DataFrame], *, outdir: Path) -> None:
 	for place, df in places.items():
 		params = _iter_numeric_parameters(df)
 		rows: list[dict[str, object]] = []
@@ -137,6 +190,17 @@ def _run_sens_slope(places: dict[str, pd.DataFrame]) -> None:
 
 			slope, intercept, lo_slope, up_slope = theilslopes(values_sorted, years_sorted)
 			tau, p_tau = kendalltau(years_sorted, values_sorted)
+
+			trend = slope * years_sorted + intercept
+			plot_path = outdir / "sens_slope" / _safe_filename(place) / f"{_safe_filename(col)}.png"
+			_save_trend_plot(
+				out_path=plot_path,
+				years=pd.Series(years_sorted),
+				values=pd.Series(values_sorted),
+				trend_values=pd.Series(trend),
+				title=f"{place} - {col} (Sen's slope)",
+				ylabel=col,
+			)
 
 			rows.append(
 				{
@@ -180,6 +244,11 @@ def _parse_args() -> argparse.Namespace:
 		default=None,
 		help="Analysis to run. If omitted, you'll be prompted interactively.",
 	)
+	parser.add_argument(
+		"--outdir",
+		default=None,
+		help="Folder to save charts (PNG). Defaults to ./outputs next to this script.",
+	)
 	return parser.parse_args()
 
 
@@ -187,6 +256,7 @@ def main() -> None:
 	args = _parse_args()
 	here = Path(__file__).resolve().parent
 	xlsx_path = here / "mennkendall.xlsx"
+	outdir = Path(args.outdir) if args.outdir else (here / "outputs")
 
 	places = _load_merged_places(xlsx_path)
 
@@ -197,11 +267,12 @@ def main() -> None:
 	choice = args.analysis or _prompt_analysis_choice()
 	print(f"\nLoaded {len(places)} areas from: {xlsx_path}")
 	print("Parameters are computed for all numeric columns except 'Year'.")
+	print(f"Charts will be saved under: {outdir.resolve()}")
 
 	if choice == "mk":
-		_run_mann_kendall(places)
+		_run_mann_kendall(places, outdir=outdir)
 	else:
-		_run_sens_slope(places)
+		_run_sens_slope(places, outdir=outdir)
 
 
 if __name__ == "__main__":
